@@ -1,0 +1,599 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Almoxarifado Inteligente – Estação de Pesagem RFID</title>
+<style>
+  :root { --bg:#0f1720; --panel:#16212d; --line:#26384a; --txt:#e6edf3; --mut:#8aa0b4; --acc:#2f81f7; --ok:#2ea043; --warn:#d29922; --err:#f85149; }
+  * { box-sizing:border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--txt); font:14px/1.4 "Segoe UI", Arial, sans-serif; overflow:hidden; }
+  #view { position:fixed; inset:0; }
+  #panel { position:fixed; top:12px; left:12px; bottom:12px; width:330px; background:rgba(22,33,45,.94); border:1px solid var(--line); border-radius:10px; padding:14px 16px; overflow-y:auto; }
+  #panel h1 { font-size:16px; margin:0 0 2px; }
+  #panel .sub { color:var(--mut); font-size:12px; margin-bottom:12px; }
+  fieldset { border:1px solid var(--line); border-radius:8px; margin:0 0 12px; padding:8px 10px 10px; }
+  legend { color:var(--mut); font-size:11px; text-transform:uppercase; letter-spacing:.06em; padding:0 4px; }
+  label { display:block; margin:6px 0 2px; font-size:12px; color:var(--mut); }
+  select, input[type=number] { width:100%; padding:6px 8px; background:#0d151d; color:var(--txt); border:1px solid var(--line); border-radius:6px; font:inherit; }
+  .row { display:flex; gap:6px; flex-wrap:wrap; }
+  .row > * { flex:1; }
+  button { padding:7px 8px; border:1px solid var(--line); background:#1d2b3a; color:var(--txt); border-radius:6px; cursor:pointer; font:inherit; font-size:13px; }
+  button:hover { border-color:var(--acc); }
+  button.pri { background:var(--acc); border-color:var(--acc); color:#fff; font-weight:600; }
+  .chk { display:flex; align-items:center; gap:6px; margin-top:8px; font-size:12px; color:var(--txt); }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  td { padding:3px 0; border-bottom:1px solid var(--line); }
+  td:last-child { text-align:right; font-variant-numeric:tabular-nums; }
+  #steps { display:flex; gap:4px; margin-bottom:10px; }
+  #steps div { flex:1; text-align:center; font-size:11px; padding:6px 2px; border-radius:6px; background:#0d151d; border:1px solid var(--line); color:var(--mut); }
+  #steps div.on { background:var(--acc); border-color:var(--acc); color:#fff; }
+  #steps div.done { border-color:var(--ok); color:var(--ok); }
+  #log { font-size:11.5px; max-height:170px; overflow-y:auto; font-family:Consolas, monospace; color:var(--mut); }
+  #log div { padding:2px 0; border-bottom:1px dashed var(--line); }
+  #hint { position:fixed; right:14px; bottom:12px; color:var(--mut); font-size:12px; background:rgba(15,23,32,.7); padding:6px 10px; border-radius:6px; }
+  #toggle { position:fixed; top:12px; left:352px; }
+  body.shot #panel, body.shot #hint, body.shot #toggle { display:none; }
+  body.collapsed #panel { display:none; }
+  body.collapsed #toggle { left:12px; }
+  @media (max-width:700px) { #panel { width:auto; right:12px; top:auto; height:46%; } #toggle { left:auto; right:12px; } }
+</style>
+</head>
+<body>
+<div id="view"></div>
+<button id="toggle" title="Mostrar/ocultar painel">☰</button>
+<aside id="panel">
+  <h1>Almoxarifado Inteligente</h1>
+  <div class="sub">Estação de pesagem com identificação RFID — modelo 3D interativo</div>
+
+  <div id="steps"><div data-s="1">1 · Pesar</div><div data-s="2">2 · Retirar / Adicionar</div><div data-s="3">3 · Pesar de novo</div></div>
+
+  <fieldset>
+    <legend>Simulação</legend>
+    <label for="prod">Caixa (produto)</label>
+    <select id="prod"></select>
+    <label>Movimentação</label>
+    <div class="row">
+      <select id="op"><option value="-1">Retirar</option><option value="1">Adicionar</option></select>
+      <input id="qty" type="number" min="1" max="20" value="12">
+    </div>
+    <label class="chk"><input type="checkbox" id="div"> Simular divergência na 1ª pesagem</label>
+    <div class="row" style="margin-top:10px">
+      <button class="pri" id="start">▶ Iniciar ciclo</button>
+      <button id="pause">⏸ Pausar</button>
+    </div>
+    <label for="speed">Velocidade</label>
+    <select id="speed"><option value="0.6">0,6×</option><option value="1" selected>1×</option><option value="1.8">1,8×</option></select>
+  </fieldset>
+
+  <fieldset>
+    <legend>Dados do sistema</legend>
+    <table id="data"></table>
+  </fieldset>
+
+  <fieldset>
+    <legend>Câmera e arquivo</legend>
+    <div class="row">
+      <button data-cam="overview">Geral</button>
+      <button data-cam="station">Estação</button>
+      <button data-cam="screen">Tela</button>
+    </div>
+    <div class="row" style="margin-top:6px"><button id="glb">⬇ Exportar modelo (.glb)</button></div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Registro de eventos</legend>
+    <div id="log"></div>
+  </fieldset>
+</aside>
+<div id="hint">Arraste para girar · roda do mouse para zoom · botão direito para mover</div>
+
+<script src="lib/three.min.js"></script>
+<script src="lib/OrbitControls.js"></script>
+<script src="lib/GLTFExporter.js"></script>
+<script>
+'use strict';
+// ---------------------------------------------------------------------------
+// Dados (simulam o cadastro do sistema)
+// ---------------------------------------------------------------------------
+const TARE = 1180; // g – massa da caixa vazia (todas as caixas são idênticas)
+const PRODUCTS = [
+  { code:'MEC-000418', name:'Parafuso sextavado M12×50 – classe 8.8', unit:56.0, qty:40, tag:'E200 3412 0000 0418 7A21', loc:'Rua A · Est. 03 · Nível 2', shape:'bolt',    color:0x9aa4ad },
+  { code:'MEC-001275', name:'Porca sextavada M16 – classe 8',         unit:33.5, qty:54, tag:'E200 3412 0000 1275 3C09', loc:'Rua A · Est. 05 · Nível 3', shape:'nut',     color:0xb7bec4 },
+  { code:'ROL-000062', name:'Rolamento rígido de esferas 6204-2RS',   unit:110.0, qty:24, tag:'E200 3412 0000 0062 91F4', loc:'Rua B · Est. 01 · Nível 1', shape:'bearing', color:0x6f7b86 },
+];
+const fmtKg = g => (g/1000).toLocaleString('pt-BR', { minimumFractionDigits:3, maximumFractionDigits:3 }) + ' kg';
+const fmtG  = g => g.toLocaleString('pt-BR', { minimumFractionDigits:1, maximumFractionDigits:1 }) + ' g';
+const qtyFromMass = (m, p) => Math.round((m - TARE) / p.unit);
+
+// ---------------------------------------------------------------------------
+// Cena
+// ---------------------------------------------------------------------------
+const params = new URLSearchParams(location.search);
+const SHOT = params.has('shot');
+if (SHOT) document.body.classList.add('shot');
+
+const host = document.getElementById('view');
+const renderer = new THREE.WebGLRenderer({ antialias:true, preserveDrawingBuffer:true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputEncoding = THREE.sRGBEncoding;
+host.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xdfe5ea);
+scene.fog = new THREE.Fog(0xdfe5ea, 9, 22);
+
+const camera = new THREE.PerspectiveCamera(42, innerWidth/innerHeight, 0.05, 60);
+const controls = new THREE.OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.maxPolarAngle = Math.PI * 0.49;
+controls.minDistance = 0.4; controls.maxDistance = 14;
+
+const CAMS = {
+  overview: { pos:[3.6, 2.6, 3.4],  target:[-0.2, 0.9, -0.9] },
+  station:  { pos:[0.4, 1.95, 1.05], target:[-0.05, 0.98, -0.02] },
+  screen:   { pos:[0.12, 1.36, 0.62], target:[0.36, 1.27, -0.2] },
+};
+let camAnim = null;
+function setCam(name, instant) {
+  const c = CAMS[name];
+  const to = { pos:new THREE.Vector3(...c.pos), target:new THREE.Vector3(...c.target) };
+  if (instant) { camera.position.copy(to.pos); controls.target.copy(to.target); controls.update(); camAnim = null; return; }
+  camAnim = { from:{ pos:camera.position.clone(), target:controls.target.clone() }, to, t:0 };
+}
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8f95, 0.75));
+const sun = new THREE.DirectionalLight(0xffffff, 0.85);
+sun.position.set(3, 6, 4);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left:-5, right:5, top:5, bottom:-5, near:0.5, far:20 });
+sun.shadow.bias = -0.0005;
+scene.add(sun);
+
+const mat = (color, o={}) => new THREE.MeshStandardMaterial(Object.assign({ color, roughness:0.7, metalness:0.05 }, o));
+function mesh(geo, material, parent, x=0, y=0, z=0, name) {
+  const m = new THREE.Mesh(geo, material);
+  m.position.set(x, y, z); m.castShadow = true; m.receiveShadow = true;
+  if (name) m.name = name;
+  (parent || scene).add(m);
+  return m;
+}
+function canvasTex(w, h, draw) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const t = new THREE.CanvasTexture(c); t.encoding = THREE.sRGBEncoding; t.anisotropy = 4;
+  t.userData.ctx = c.getContext('2d'); t.userData.canvas = c;
+  if (draw) draw(t.userData.ctx, w, h);
+  return t;
+}
+
+// Piso com faixas de circulação
+const floor = mesh(new THREE.PlaneGeometry(16, 14), mat(0xb9bec3, { roughness:0.95 }), scene, 0, 0, -1.5, 'Piso');
+floor.rotation.x = -Math.PI/2; floor.castShadow = false;
+const stripeMat = mat(0xf2c200, { roughness:0.8 });
+[[0, 0.002, 0.95, 3.2, 0.06], [0, 0.002, -0.95, 3.2, 0.06], [-1.6, 0.002, 0, 0.06, 1.96], [1.6, 0.002, 0, 0.06, 1.96]].forEach(([x,y,z,w,d]) => {
+  const s = mesh(new THREE.PlaneGeometry(w, d), stripeMat, scene, x, y, z); s.rotation.x = -Math.PI/2; s.castShadow = false;
+});
+
+// ---------------------------------------------------------------------------
+// Caixa padrão (idêntica para todos os itens) com etiqueta RFID
+// ---------------------------------------------------------------------------
+const BOX = { w:0.40, h:0.18, d:0.30, t:0.008 };
+const boxMat = mat(0x1f5fae, { roughness:0.55 });
+const tagTex = canvasTex(256, 128, (g, w, h) => {
+  g.fillStyle = '#ffffff'; g.fillRect(0, 0, w, h);
+  g.strokeStyle = '#b08a2e'; g.lineWidth = 4;
+  for (let i = 0; i < 5; i++) { g.strokeRect(14 + i*9, 18 + i*9, 120 - i*18, 92 - i*18); }
+  g.fillStyle = '#333'; g.fillRect(62, 54, 14, 20);
+  g.fillStyle = '#111'; g.font = 'bold 30px Arial'; g.fillText('RFID', 150, 58);
+  g.font = '18px Arial'; g.fillText('UHF · EPC', 150, 88);
+});
+const tagMat = new THREE.MeshStandardMaterial({ map:tagTex, roughness:0.6 });
+const wallGeo = { side:new THREE.BoxGeometry(BOX.t, BOX.h, BOX.d), front:new THREE.BoxGeometry(BOX.w, BOX.h, BOX.t), bottom:new THREE.BoxGeometry(BOX.w, BOX.t, BOX.d) };
+const tagGeo = new THREE.PlaneGeometry(0.12, 0.06);
+const fillGeo = new THREE.BoxGeometry(BOX.w - 0.03, BOX.h * 0.5, BOX.d - 0.03);
+const fillMat = mat(0x7d868e, { roughness:0.5, metalness:0.4 });
+
+function makeBox(name, filled) {
+  const g = new THREE.Group(); g.name = name;
+  mesh(wallGeo.bottom, boxMat, g, 0, BOX.t/2, 0);
+  mesh(wallGeo.side, boxMat, g, -BOX.w/2 + BOX.t/2, BOX.h/2, 0);
+  mesh(wallGeo.side, boxMat, g,  BOX.w/2 - BOX.t/2, BOX.h/2, 0);
+  mesh(wallGeo.front, boxMat, g, 0, BOX.h/2,  BOX.d/2 - BOX.t/2);
+  mesh(wallGeo.front, boxMat, g, 0, BOX.h/2, -BOX.d/2 + BOX.t/2);
+  const tag = mesh(tagGeo, tagMat, g, 0, BOX.h*0.55, BOX.d/2 + 0.001, 'Etiqueta RFID'); tag.castShadow = false;
+  if (filled) mesh(fillGeo, fillMat, g, 0, BOX.h*0.25 + BOX.t, 0);
+  return g;
+}
+
+// ---------------------------------------------------------------------------
+// Estantes com caixas (representação do estoque de +2000 itens)
+// ---------------------------------------------------------------------------
+const rackMat = mat(0xe36c1e, { roughness:0.5, metalness:0.3 });
+const shelfMat = mat(0x5b6670, { roughness:0.6, metalness:0.4 });
+const LEVELS = [0.12, 0.52, 0.92, 1.32, 1.72];
+const RACK_W = 2.7, RACK_D = 0.45;
+let pickedSlot = null;
+function makeRack(cx, cz, rotY, id) {
+  const r = new THREE.Group(); r.name = 'Estante ' + id; r.position.set(cx, 0, cz); r.rotation.y = rotY; scene.add(r);
+  const postGeo = new THREE.BoxGeometry(0.06, 2.15, 0.06);
+  [-RACK_W/2, -RACK_W/6, RACK_W/6, RACK_W/2].forEach(x => [-RACK_D/2, RACK_D/2].forEach(z => mesh(postGeo, rackMat, r, x, 1.075, z)));
+  const shelfGeo = new THREE.BoxGeometry(RACK_W, 0.025, RACK_D);
+  LEVELS.forEach(y => mesh(shelfGeo, shelfMat, r, 0, y - 0.0125, 0));
+  mesh(shelfGeo, shelfMat, r, 0, 2.12, 0);
+  LEVELS.forEach((y, li) => {
+    for (let i = 0; i < 6; i++) {
+      const x = -RACK_W/2 + 0.225 + i*0.45;
+      if (id === 'A-03' && li === 2 && i === 4) { pickedSlot = { rack:r, local:new THREE.Vector3(x, y, 0.06) }; continue; }
+      const b = makeBox(`Caixa ${id}-${li+1}-${i+1}`, true); b.position.set(x, y, 0.06); r.add(b);
+    }
+  });
+  const sign = canvasTex(256, 96, (g, w, h) => { g.fillStyle = '#16212d'; g.fillRect(0,0,w,h); g.fillStyle = '#fff'; g.font = 'bold 54px Arial'; g.textAlign='center'; g.fillText(id, w/2, 68); });
+  const s = mesh(new THREE.PlaneGeometry(0.42, 0.16), new THREE.MeshStandardMaterial({ map:sign }), r, 0, 2.28, RACK_D/2); s.castShadow = false;
+  return r;
+}
+makeRack(-1.55, -2.1, 0, 'A-03'); makeRack(1.55, -2.1, 0, 'A-04');
+makeRack(-1.55, -3.6, Math.PI, 'A-01'); makeRack(1.55, -3.6, Math.PI, 'A-02');
+makeRack(-1.55, -4.3, 0, 'B-01'); makeRack(1.55, -4.3, 0, 'B-02');
+makeRack(-4.4, -0.6, Math.PI/2, 'C-01'); makeRack(4.4, -0.6, -Math.PI/2, 'C-02');
+scene.updateMatrixWorld(true);
+const SHELF_POS = pickedSlot.local.clone().applyMatrix4(pickedSlot.rack.matrixWorld);
+
+// ---------------------------------------------------------------------------
+// Estação de pesagem: bancada, balança, leitor RFID, tela
+// ---------------------------------------------------------------------------
+const station = new THREE.Group(); station.name = 'Estação de pesagem'; scene.add(station);
+const TOP = 0.9;
+const benchMat = mat(0x3d4a56, { roughness:0.4, metalness:0.5 });
+mesh(new THREE.BoxGeometry(1.7, 0.04, 0.8), mat(0xc9ced2, { roughness:0.5 }), station, 0, TOP - 0.02, 0, 'Tampo da bancada');
+[[-0.8,-0.36],[0.8,-0.36],[-0.8,0.36],[0.8,0.36]].forEach(([x,z]) => mesh(new THREE.BoxGeometry(0.05, TOP-0.04, 0.05), benchMat, station, x, (TOP-0.04)/2, z));
+mesh(new THREE.BoxGeometry(1.6, 0.03, 0.7), benchMat, station, 0, 0.18, 0);
+mesh(new THREE.BoxGeometry(0.5, 0.45, 0.66), mat(0x2b3640), station, 0.52, 0.47, 0, 'Gabinete (controlador)');
+
+// Balança de plataforma
+const SCALE = new THREE.Vector3(-0.38, TOP, 0.06);
+const scaleG = new THREE.Group(); scaleG.name = 'Balança de plataforma'; scaleG.position.copy(SCALE); station.add(scaleG);
+mesh(new THREE.BoxGeometry(0.48, 0.06, 0.40), mat(0x2a2f35, { roughness:0.6 }), scaleG, 0, 0.03, 0);
+mesh(new THREE.BoxGeometry(0.46, 0.018, 0.38), mat(0xd7dde2, { roughness:0.25, metalness:0.85 }), scaleG, 0, 0.069, 0, 'Prato inox');
+const PLATE_Y = TOP + 0.078;
+// Indicador de pesagem (display da balança)
+const indTex = canvasTex(512, 160);
+const ind = new THREE.Group(); ind.position.set(-0.38, TOP, 0.34); ind.rotation.x = 0.5; station.add(ind); ind.name = 'Indicador da balança';
+mesh(new THREE.BoxGeometry(0.26, 0.03, 0.1), mat(0x22272c), ind, 0, 0.015, 0);
+const indScreen = mesh(new THREE.PlaneGeometry(0.22, 0.069), new THREE.MeshBasicMaterial({ map:indTex }), ind, 0, 0.031, 0); indScreen.rotation.x = -Math.PI/2;
+function drawIndicator(g) {
+  const c = indTex.userData.ctx;
+  c.fillStyle = '#0b1a0b'; c.fillRect(0, 0, 512, 160);
+  c.fillStyle = '#7dff7a'; c.font = 'bold 92px Consolas, monospace'; c.textAlign = 'right';
+  c.fillText((Math.max(0, g)/1000).toFixed(3).replace('.', ','), 420, 112);
+  c.font = 'bold 40px Arial'; c.fillText('kg', 495, 112);
+  c.textAlign = 'left'; c.font = '24px Arial'; c.fillStyle = state.stable ? '#7dff7a' : '#2c5a2c'; c.fillText('● ESTÁVEL', 18, 148);
+  indTex.needsUpdate = true;
+}
+
+// Leitor RFID (antena painel UHF voltada para a balança)
+const reader = new THREE.Group(); reader.name = 'Leitor RFID'; reader.position.set(-0.38, TOP, -0.26); station.add(reader);
+mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.3, 16), benchMat, reader, 0, 0.15, 0);
+mesh(new THREE.BoxGeometry(0.14, 0.012, 0.1), benchMat, reader, 0, 0.006, 0);
+const rfidTex = canvasTex(256, 256, (g, w, h) => {
+  g.fillStyle = '#f4f6f8'; g.fillRect(0,0,w,h);
+  g.strokeStyle = '#2f81f7'; g.lineWidth = 8; [40, 70, 100].forEach(r => { g.beginPath(); g.arc(128, 150, r, -Math.PI*0.8, -Math.PI*0.2); g.stroke(); });
+  g.fillStyle = '#2f81f7'; g.beginPath(); g.arc(128, 150, 14, 0, Math.PI*2); g.fill();
+  g.fillStyle = '#16212d'; g.font = 'bold 34px Arial'; g.textAlign = 'center'; g.fillText('RFID UHF', 128, 220);
+});
+const antenna = mesh(new THREE.BoxGeometry(0.26, 0.26, 0.035), mat(0xf4f6f8), reader, 0, 0.42, 0, 'Antena RFID');
+antenna.rotation.x = 0.25;
+const antFace = mesh(new THREE.PlaneGeometry(0.25, 0.25), new THREE.MeshStandardMaterial({ map:rfidTex }), antenna, 0, 0, 0.0185); antFace.castShadow = false;
+const led = mesh(new THREE.SphereGeometry(0.012, 16, 12), new THREE.MeshBasicMaterial({ color:0x335533 }), antenna, 0.1, 0.1, 0.02, 'LED leitura');
+// Ondas de leitura (só visual, não exportadas)
+const waves = [];
+for (let i = 0; i < 3; i++) {
+  const w = new THREE.Mesh(new THREE.TorusGeometry(0.1, 0.006, 8, 48), new THREE.MeshBasicMaterial({ color:0x2f81f7, transparent:true, opacity:0, depthWrite:false }));
+  w.userData.fx = true; w.userData.phase = i/3;
+  w.position.set(-0.38, TOP + 0.42, -0.23); w.rotation.x = 0.25; station.add(w); waves.push(w);
+}
+
+// Tela (IHM) ao lado da balança
+const SCR_W = 1024, SCR_H = 640;
+const scrTex = canvasTex(SCR_W, SCR_H);
+const monitor = new THREE.Group(); monitor.name = 'Tela da estação'; monitor.position.set(0.38, TOP, -0.2); monitor.rotation.y = -0.32; station.add(monitor);
+mesh(new THREE.BoxGeometry(0.2, 0.015, 0.16), benchMat, monitor, 0, 0.0075, 0);
+mesh(new THREE.BoxGeometry(0.04, 0.3, 0.03), benchMat, monitor, 0, 0.16, -0.02);
+const bezel = mesh(new THREE.BoxGeometry(0.58, 0.38, 0.03), mat(0x14191e, { roughness:0.4 }), monitor, 0, 0.37, 0.01);
+bezel.rotation.x = -0.12;
+const scr = mesh(new THREE.PlaneGeometry(0.55, 0.344), new THREE.MeshBasicMaterial({ map:scrTex, toneMapped:false }), bezel, 0, 0, 0.0155, 'Tela – interface do operador');
+scr.castShadow = false;
+
+// Bandeja de retirada / reposição
+const TRAY = new THREE.Vector3(0.62, TOP, 0.2);
+const tray = new THREE.Group(); tray.name = 'Bandeja de separação'; tray.position.copy(TRAY); station.add(tray);
+const trayMat = mat(0xe8a317);
+mesh(new THREE.BoxGeometry(0.32, 0.006, 0.2), trayMat, tray, 0, 0.003, 0);
+[[0,0.1,0.32,0.004],[0,-0.1,0.32,0.004],[0.16,0,0.004,0.2],[-0.16,0,0.004,0.2]].forEach(([x,z,w,d]) => mesh(new THREE.BoxGeometry(w, 0.03, d), trayMat, tray, x, 0.015, z));
+
+// Placa da estação
+const signTex = canvasTex(1024, 128, (g, w, h) => { g.fillStyle = '#16212d'; g.fillRect(0,0,w,h); g.fillStyle = '#ffffff'; g.font = 'bold 50px Arial'; g.textAlign = 'center'; g.fillText('ESTAÇÃO DE PESAGEM 01  ·  RFID', w/2, 84); });
+const sign = mesh(new THREE.PlaneGeometry(1.3, 0.16), new THREE.MeshStandardMaterial({ map:signTex }), station, 0, 1.92, -0.42); sign.castShadow = false;
+[-0.6, 0.6].forEach(x => mesh(new THREE.BoxGeometry(0.03, 1.05, 0.03), benchMat, station, x, 1.43, -0.435));
+
+// ---------------------------------------------------------------------------
+// Caixa em movimentação e unidades de produto
+// ---------------------------------------------------------------------------
+const box = makeBox('Caixa em movimentação', false); scene.add(box);
+const ON_SCALE = new THREE.Vector3(SCALE.x, PLATE_Y, SCALE.z);
+const ASIDE = new THREE.Vector3(0.08, TOP, 0.16);
+const LIFT = new THREE.Vector3(-0.2, 1.55, -0.75);
+const geos = {
+  bolt: (() => { const g = new THREE.CylinderGeometry(0.009, 0.009, 0.07, 10); g.rotateX(Math.PI/2); return g; })(),
+  nut: new THREE.CylinderGeometry(0.016, 0.016, 0.014, 6),
+  bearing: new THREE.CylinderGeometry(0.024, 0.024, 0.016, 24),
+};
+let items = [];
+function slotInBox(i, shape) {
+  const [cols, rows] = shape === 'bolt' ? [9, 3] : shape === 'nut' ? [10, 7] : [7, 5];
+  const per = cols * rows, layer = Math.floor(i / per), k = i % per;
+  const cx = (k % cols) - (cols-1)/2, cz = Math.floor(k / cols) - (rows-1)/2;
+  const dx = (BOX.w - 0.05) / cols, dz = (BOX.d - 0.05) / rows;
+  const hY = shape === 'bolt' ? 0.019 : shape === 'nut' ? 0.016 : 0.018;
+  return new THREE.Vector3(cx*dx, BOX.t + hY/2 + 0.004 + layer*hY, cz*dz);
+}
+function slotInTray(i) {
+  const bolt = state.product.shape === 'bolt', rows = bolt ? 2 : 4, cols = 6;
+  const cx = (i % cols) - (cols-1)/2, cz = Math.floor(i / cols) % rows - (rows-1)/2;
+  return new THREE.Vector3(TRAY.x + cx*0.05, TRAY.y + 0.018 + Math.floor(i/(cols*rows))*0.022, TRAY.z + cz*(bolt ? 0.08 : 0.045));
+}
+function buildItems(p, inBox, inTray) {
+  items.forEach(it => scene.remove(it.mesh)); items = [];
+  const m = mat(p.color, { roughness:0.4, metalness:0.45 });
+  for (let i = 0; i < inBox + inTray; i++) {
+    const me = mesh(p.shape === 'bolt' ? geos.bolt : p.shape === 'nut' ? geos.nut : geos.bearing, m, scene);
+    me.name = p.code + ' #' + (i+1);
+    const it = { mesh:me, where: i < inBox ? 'box' : 'tray', slot:i < inBox ? i : i - inBox };
+    items.push(it);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Interface (tela 1024×640 desenhada em canvas)
+// ---------------------------------------------------------------------------
+function rr(c, x, y, w, h, r) { c.beginPath(); c.moveTo(x+r, y); c.arcTo(x+w, y, x+w, y+h, r); c.arcTo(x+w, y+h, x, y+h, r); c.arcTo(x, y+h, x, y, r); c.arcTo(x, y, x+w, y, r); c.closePath(); }
+function drawScreen() {
+  const c = scrTex.userData.ctx, W = SCR_W, H = SCR_H, p = state.product, s = state.screen;
+  c.fillStyle = '#f3f5f7'; c.fillRect(0, 0, W, H);
+  c.fillStyle = '#16212d'; c.fillRect(0, 0, W, 70);
+  c.fillStyle = '#fff'; c.font = 'bold 28px Segoe UI, Arial'; c.textAlign = 'left'; c.fillText('Almoxarifado Inteligente', 28, 45);
+  c.font = '22px Segoe UI, Arial'; c.textAlign = 'right'; c.fillStyle = '#9fb3c8'; c.fillText('Estação 01  ·  ' + new Date().toLocaleTimeString('pt-BR', { hour:'2-digit', minute:'2-digit' }), W - 28, 45);
+  // indicador de etapas
+  const labels = ['Pesar caixa', 'Retirar / adicionar', 'Pesar novamente'];
+  for (let i = 0; i < 3; i++) {
+    const x = 40 + i*325, active = state.step === i+1, done = state.step > i+1;
+    rr(c, x, 90, 300, 64, 12); c.fillStyle = active ? '#2f81f7' : done ? '#dff3e4' : '#e3e8ed'; c.fill();
+    c.fillStyle = active ? '#fff' : done ? '#1f7a35' : '#6b7d8f';
+    c.beginPath(); c.arc(x + 36, 122, 20, 0, Math.PI*2); c.fill();
+    c.fillStyle = active ? '#2f81f7' : done || !active ? '#fff' : '#fff'; c.font = 'bold 24px Segoe UI, Arial'; c.textAlign = 'center'; c.fillText(done ? '✓' : String(i+1), x + 36, 131);
+    c.fillStyle = active ? '#fff' : done ? '#1f7a35' : '#6b7d8f'; c.textAlign = 'left'; c.font = 'bold 24px Segoe UI, Arial'; c.fillText(labels[i], x + 66, 131);
+  }
+  // cartão do produto
+  rr(c, 40, 168, W - 80, 116, 12); c.fillStyle = '#fff'; c.fill(); c.strokeStyle = '#d5dde5'; c.lineWidth = 2; c.stroke();
+  c.textAlign = 'left';
+  if (s === 'idle' || s === 'reading') {
+    c.fillStyle = '#6b7d8f'; c.font = '26px Segoe UI, Arial'; c.fillText(s === 'idle' ? 'Nenhuma caixa identificada' : 'Lendo etiqueta RFID…', 66, 235);
+  } else {
+    c.fillStyle = '#16212d'; c.font = 'bold 28px Segoe UI, Arial'; c.fillText(p.name, 66, 206);
+    c.fillStyle = '#4a5c6e'; c.font = '21px Segoe UI, Arial';
+    c.fillText(`${p.code}   ·   Tag ${p.tag}   ·   ${p.loc}`, 66, 240);
+    c.fillText(`Massa unitária ${fmtG(p.unit)}   ·   Tara da caixa ${fmtKg(TARE)}`, 66, 270);
+  }
+  // área principal
+  const big = (txt, color, y=370) => { c.fillStyle = color; c.font = 'bold 44px Segoe UI, Arial'; c.textAlign = 'center'; c.fillText(txt, W/2, y); };
+  const line = (txt, y, color='#33475b', size=27) => { c.fillStyle = color; c.font = `${size}px Segoe UI, Arial`; c.textAlign = 'center'; c.fillText(txt, W/2, y); };
+  const banner = (color) => { rr(c, 40, 300, W - 80, 286, 16); c.fillStyle = color; c.fill(); };
+  if (s === 'idle') { banner('#e9eef3'); big('Coloque a caixa sobre a balança', '#16212d', 420); line('O leitor RFID identificará o produto automaticamente', 470); }
+  else if (s === 'reading') { banner('#e8f1fe'); big('Identificando caixa…', '#2f81f7', 420); line('Mantenha a caixa sobre a balança', 470); }
+  else if (s === 'identified' || s === 'weigh1') {
+    banner('#e8f1fe'); line('ETAPA 1 — PESE A CAIXA DA FORMA QUE FOI ENCONTRADA', 345, '#2f81f7', 26);
+    big(fmtKg(state.reading), '#16212d', 420);
+    line(s === 'identified' ? 'Aguardando estabilização da balança…' : `Saldo no sistema: ${state.sysQty} un  —  conferindo…`, 480);
+  } else if (s === 'check') {
+    const ok = state.found === state.sysQty;
+    banner(ok ? '#dff3e4' : '#fdf0d5'); line('ETAPA 1 — CONFERÊNCIA', 345, ok ? '#1f7a35' : '#9a6700', 26);
+    big(ok ? `✓  ${state.found} unidades — conforme o sistema` : `⚠  Divergência: ${state.found - state.sysQty} un`, ok ? '#1f7a35' : '#9a6700', 412);
+    line(`Massa ${fmtKg(state.m1)}  ·  esperado ${state.sysQty} un  ·  encontrado ${state.found} un`, 466);
+    line(ok ? 'Prossiga para a etapa 2' : 'Saldo ajustado e ocorrência enviada ao responsável', 512, ok ? '#33475b' : '#9a6700');
+  } else if (s === 'action') {
+    const add = state.delta > 0;
+    banner('#fff4e0'); line('ETAPA 2 — MOVIMENTAÇÃO', 345, '#b25e00', 26);
+    big(add ? `Adicione ${state.delta} unidade(s) na caixa` : `Retire ${-state.delta} unidade(s) da caixa`, '#16212d', 415);
+    line('Retire a caixa da balança, faça a movimentação e', 470);
+    line('coloque-a novamente sobre a balança', 506);
+  } else if (s === 'weigh2') {
+    banner('#e8f1fe'); line('ETAPA 3 — PESE A CAIXA NOVAMENTE', 345, '#2f81f7', 26);
+    big(fmtKg(state.reading), '#16212d', 420); line('Calculando quantidade restante…', 480);
+  } else if (s === 'done') {
+    banner('#dff3e4'); line('ETAPA 3 — MOVIMENTAÇÃO REGISTRADA', 345, '#1f7a35', 26);
+    big(`Saldo atual: ${state.final} unidades`, '#1f7a35', 412);
+    const mv = state.final - state.found;
+    line(`${mv < 0 ? 'Retirada' : 'Entrada'} de ${Math.abs(mv)} un  ·  massa final ${fmtKg(state.m2)}`, 466);
+    line('Devolva a caixa à posição ' + p.loc, 512);
+  }
+  c.fillStyle = '#8aa0b4'; c.font = '18px Segoe UI, Arial'; c.textAlign = 'left';
+  c.fillText('Leitor RFID: ' + (state.screen === 'idle' ? 'aguardando' : 'conectado') + '   ·   Balança: ' + (state.stable ? 'estável' : 'em movimento') + '   ·   Servidor: online', 40, H - 22);
+  scrTex.needsUpdate = true;
+}
+
+// ---------------------------------------------------------------------------
+// Sequência do ciclo de operação
+// ---------------------------------------------------------------------------
+const state = { product:PRODUCTS[0], step:0, screen:'idle', reading:0, target:0, stable:true, sysQty:0, actual:0, found:0, delta:0, final:0, m1:0, m2:0, boxTarget:SHELF_POS.clone(), waves:false, running:false, paused:false, phase:-1, t:0 };
+const massOf = n => TARE + n * state.product.unit;
+const boxMass = () => massOf(items.filter(i => i.where === 'box').length);
+
+const PHASES = [
+  { id:'inicio',      dur:1.2, enter(){ state.screen='idle'; state.step=0; state.boxTarget=SHELF_POS.clone(); } },
+  { id:'transporte',  dur:1.5, enter(){ state.boxTarget=LIFT.clone(); log('Operador retira a caixa da estante ' + state.product.loc); } },
+  { id:'apoio',       dur:1.3, enter(){ state.boxTarget=ON_SCALE.clone(); } },
+  { id:'leitura',     dur:1.8, enter(){ state.screen='reading'; state.waves=true; } },
+  { id:'identificado',dur:1.6, enter(){ state.waves=false; state.screen='identified'; state.step=1; log('RFID lido: ' + state.product.tag + ' → ' + state.product.code); } },
+  { id:'pesagem1',    dur:2.0, enter(){ state.screen='weigh1'; } },
+  { id:'verificacao', dur:3.2, enter(){ state.m1=boxMass(); state.found=qtyFromMass(state.m1, state.product); state.screen='check';
+      log(`Etapa 1: ${fmtKg(state.m1)} → ${state.found} un (sistema: ${state.sysQty} un)`);
+      if (state.found !== state.sysQty) log(`⚠ Divergência de ${state.found - state.sysQty} un registrada`); } },
+  { id:'acao',        dur:1.4, enter(){ state.step=2; state.screen='action'; state.boxTarget=ASIDE.clone(); } },
+  { id:'movimento',   dur:2.8, enter(){ moveItems(); } },
+  { id:'retorno',     dur:1.4, enter(){ state.step=3; state.screen='weigh2'; state.boxTarget=ON_SCALE.clone(); } },
+  { id:'pesagem2',    dur:2.0, enter(){} },
+  { id:'registro',    dur:3.6, enter(){ state.m2=boxMass(); state.final=qtyFromMass(state.m2, state.product); state.screen='done'; state.step=4;
+      log(`Etapa 3: ${fmtKg(state.m2)} → saldo ${state.final} un (${state.final - state.found >= 0 ? '+' : ''}${state.final - state.found} un)`); } },
+  { id:'devolucao',   dur:1.6, enter(){ state.boxTarget=LIFT.clone(); } },
+  { id:'guarda',      dur:1.6, enter(){ state.boxTarget=SHELF_POS.clone(); log('Caixa devolvida à posição. Ciclo concluído.'); } },
+];
+function moveItems() {
+  const d = state.delta;
+  if (d < 0) { let n = -d, t = 0; for (let i = items.length - 1; i >= 0 && n > 0; i--) if (items[i].where === 'box') { items[i].where = 'tray'; items[i].slot = t++; n--; } }
+  else { let n = d, idx = items.filter(i => i.where === 'box').length; items.forEach(it => { if (it.where === 'tray' && n > 0) { it.where = 'box'; it.slot = idx++; n--; } }); }
+  log(d < 0 ? `Etapa 2: retirada de ${-d} un` : `Etapa 2: adição de ${d} un`);
+}
+const onScale = () => box.position.distanceTo(ON_SCALE) < 0.02;
+
+function resetCycle() {
+  const p = PRODUCTS[+document.getElementById('prod').value];
+  state.product = p;
+  const op = +document.getElementById('op').value;
+  const q = Math.max(1, Math.min(20, +document.getElementById('qty').value || 1));
+  state.sysQty = p.qty;
+  state.actual = document.getElementById('div').checked ? p.qty - 2 : p.qty;
+  state.delta = op * Math.min(q, op < 0 ? state.actual : 20);
+  buildItems(p, state.actual, state.delta > 0 ? state.delta : 0);
+  state.phase = -1; state.t = 0; state.waves = false; state.step = 0;
+  box.position.copy(SHELF_POS); state.boxTarget = SHELF_POS.clone();
+  snapItems();
+  renderData();
+}
+function gotoPhase(i) { state.phase = i; state.t = 0; if (PHASES[i]) PHASES[i].enter(); renderSteps(); renderData(); }
+function jumpTo(id) {
+  resetCycle();
+  const idx = PHASES.findIndex(p => p.id === id);
+  for (let i = 0; i <= idx; i++) gotoPhase(i);
+  box.position.copy(state.boxTarget); snapItems();
+  state.reading = onScale() ? boxMass() : 0; state.stable = true;
+  state.t = PHASES[idx].dur * 0.5;
+}
+
+// ---------------------------------------------------------------------------
+// Animação
+// ---------------------------------------------------------------------------
+function itemTarget(it) {
+  if (it.where === 'box') return slotInBox(it.slot, state.product.shape).add(box.position);
+  return slotInTray(it.slot);
+}
+function snapItems() { items.forEach(it => it.mesh.position.copy(itemTarget(it))); }
+
+const clock = new THREE.Clock();
+let screenTimer = 0, lastScreenKey = '';
+function tick() {
+  const dt = Math.min(clock.getDelta(), 0.05);
+  const spd = +document.getElementById('speed').value;
+  if (state.running && !state.paused) {
+    state.t += dt * spd;
+    if (state.phase < 0 || state.t >= PHASES[state.phase].dur) {
+      if (state.phase + 1 < PHASES.length) gotoPhase(state.phase + 1);
+      else { state.running = false; state.step = 0; renderSteps(); }
+    }
+  }
+  // caixa
+  const k = 1 - Math.exp(-dt * spd * 4.2);
+  box.position.lerp(state.boxTarget, k);
+  if (box.position.distanceTo(state.boxTarget) < 0.002) box.position.copy(state.boxTarget);
+  // itens
+  items.forEach(it => {
+    const t = itemTarget(it);
+    if (it.where === 'box' && it.mesh.position.distanceTo(t) < 0.08) it.mesh.position.copy(t);
+    else { const mid = it.mesh.position.clone().lerp(t, 1 - Math.exp(-dt * spd * 3)); if (it.mesh.position.distanceTo(t) > 0.05) mid.y = Math.max(mid.y, TOP + 0.3); it.mesh.position.copy(mid); }
+  });
+  // balança
+  state.target = onScale() ? boxMass() : 0;
+  const diff = state.target - state.reading;
+  state.reading += diff * (1 - Math.exp(-dt * spd * 3));
+  state.stable = Math.abs(diff) < 1;
+  if (state.stable) state.reading = state.target;
+  // leitor
+  waves.forEach(w => {
+    if (!state.waves) { w.material.opacity = 0; return; }
+    const ph = (performance.now()/900 + w.userData.phase) % 1;
+    w.scale.setScalar(0.6 + ph * 1.8); w.material.opacity = 0.75 * (1 - ph);
+    w.position.z = -0.23 + ph * 0.18; w.position.y = TOP + 0.42 - ph * 0.12;
+  });
+  led.material.color.setHex(state.waves ? 0x3cff6a : (state.screen === 'idle' ? 0x335533 : 0x2f81f7));
+  // telas (redesenha só quando muda)
+  screenTimer += dt;
+  const key = state.screen + state.step + Math.round(state.reading) + state.stable;
+  if (key !== lastScreenKey || screenTimer > 5) { drawScreen(); drawIndicator(state.reading); lastScreenKey = key; screenTimer = 0; }
+  // câmera
+  if (camAnim) {
+    camAnim.t = Math.min(1, camAnim.t + dt * 1.4);
+    const e = camAnim.t < .5 ? 2*camAnim.t*camAnim.t : 1 - Math.pow(-2*camAnim.t + 2, 2)/2;
+    camera.position.lerpVectors(camAnim.from.pos, camAnim.to.pos, e);
+    controls.target.lerpVectors(camAnim.from.target, camAnim.to.target, e);
+    if (camAnim.t >= 1) camAnim = null;
+  }
+  controls.update();
+  renderer.render(scene, camera);
+  requestAnimationFrame(tick);
+}
+
+// ---------------------------------------------------------------------------
+// Painel lateral
+// ---------------------------------------------------------------------------
+const logEl = document.getElementById('log');
+function log(msg) { const d = document.createElement('div'); d.textContent = new Date().toLocaleTimeString('pt-BR') + '  ' + msg; logEl.prepend(d); }
+function renderSteps() {
+  document.querySelectorAll('#steps div').forEach(d => { const s = +d.dataset.s; d.className = state.step === s ? 'on' : state.step > s ? 'done' : ''; });
+}
+function renderData() {
+  const p = state.product;
+  const rows = [
+    ['Código', p.code], ['Tag RFID (EPC)', p.tag], ['Localização', p.loc],
+    ['Massa unitária', fmtG(p.unit)], ['Tara da caixa', fmtKg(TARE)],
+    ['Saldo no sistema', state.sysQty + ' un'], ['Massa esperada', fmtKg(massOf(state.sysQty))],
+    ['1ª pesagem', state.m1 ? `${fmtKg(state.m1)} → ${state.found} un` : '—'],
+    ['2ª pesagem', state.m2 && state.step >= 4 ? `${fmtKg(state.m2)} → ${state.final} un` : '—'],
+  ];
+  document.getElementById('data').innerHTML = rows.map(r => `<tr><td>${r[0]}</td><td>${r[1]}</td></tr>`).join('');
+}
+const prodSel = document.getElementById('prod');
+PRODUCTS.forEach((p, i) => prodSel.add(new Option(`${p.code} – ${p.name}`, i)));
+['prod', 'op', 'qty', 'div'].forEach(id => document.getElementById(id).addEventListener('change', () => { state.m1 = state.m2 = 0; state.running = false; state.screen = 'idle'; resetCycle(); renderSteps(); }));
+document.getElementById('start').onclick = () => { state.m1 = state.m2 = 0; resetCycle(); state.running = true; state.paused = false; log('— Novo ciclo: ' + state.product.code + ' —'); };
+document.getElementById('pause').onclick = e => { state.paused = !state.paused; e.target.textContent = state.paused ? '▶ Continuar' : '⏸ Pausar'; };
+document.querySelectorAll('[data-cam]').forEach(b => b.onclick = () => setCam(b.dataset.cam));
+document.getElementById('toggle').onclick = () => document.body.classList.toggle('collapsed');
+document.getElementById('glb').onclick = () => {
+  const hidden = []; scene.traverse(o => { if (o.userData.fx && o.visible) { o.visible = false; hidden.push(o); } });
+  new THREE.GLTFExporter().parse(scene, res => {
+    hidden.forEach(o => o.visible = true);
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([res], { type:'model/gltf-binary' }));
+    a.download = 'almoxarifado-estacao-pesagem-rfid.glb'; a.click(); log('Modelo exportado (.glb)');
+  }, err => { hidden.forEach(o => o.visible = true); log('Falha ao exportar: ' + err); }, { binary:true, onlyVisible:true });
+};
+addEventListener('resize', () => { camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+
+// Início
+resetCycle();
+if (SHOT) {
+  document.getElementById('div').checked = params.has('div');
+  jumpTo(params.get('phase') || 'inicio');
+  if (params.get('waves')) state.waves = true;
+  setCam(params.get('shot') in CAMS ? params.get('shot') : 'overview', true);
+} else {
+  setCam('overview', true);
+  setTimeout(() => setCam('station'), 600);
+  setTimeout(() => document.getElementById('start').click(), 1400);
+}
+renderSteps(); renderData();
+tick();
+</script>
+</body>
+</html>
