@@ -91,6 +91,7 @@
 <script src="lib/three.min.js"></script>
 <script src="lib/OrbitControls.js"></script>
 <script src="lib/GLTFExporter.js"></script>
+<script src="lib/BufferGeometryUtils.js"></script>
 <script>
 'use strict';
 // ---------------------------------------------------------------------------
@@ -115,10 +116,10 @@ if (SHOT) document.body.classList.add('shot');
 
 const host = document.getElementById('view');
 const renderer = new THREE.WebGLRenderer({ antialias:true, preserveDrawingBuffer:true });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
 renderer.setSize(innerWidth, innerHeight);
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.type = THREE.PCFShadowMap;
 renderer.outputEncoding = THREE.sRGBEncoding;
 host.appendChild(renderer.domElement);
 
@@ -149,7 +150,7 @@ scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8f95, 0.75));
 const sun = new THREE.DirectionalLight(0xffffff, 0.85);
 sun.position.set(3, 6, 4);
 sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.mapSize.set(1024, 1024);
 Object.assign(sun.shadow.camera, { left:-5, right:5, top:5, bottom:-5, near:0.5, far:20 });
 sun.shadow.bias = -0.0005;
 scene.add(sun);
@@ -241,6 +242,31 @@ makeRack(-1.55, -4.3, 0, 'B-01'); makeRack(1.55, -4.3, 0, 'B-02');
 makeRack(-4.4, -0.6, Math.PI/2, 'C-01'); makeRack(4.4, -0.6, -Math.PI/2, 'C-02');
 scene.updateMatrixWorld(true);
 const SHELF_POS = pickedSlot.local.clone().applyMatrix4(pickedSlot.rack.matrixWorld);
+
+// Estantes e caixas são estáticas: funde tudo em poucas malhas (uma por material)
+// para reduzir milhares de chamadas de desenho a algumas dezenas.
+(function bakeRacks() {
+  const racks = scene.children.filter(o => o.isGroup && o.name.startsWith('Estante '));
+  const buckets = new Map();
+  racks.forEach(r => r.traverse(o => {
+    if (!o.isMesh) return;
+    const g = o.geometry.clone().applyMatrix4(o.matrixWorld);
+    if (!buckets.has(o.material)) buckets.set(o.material, []);
+    buckets.get(o.material).push(g);
+  }));
+  racks.forEach(r => scene.remove(r));
+  const names = new Map([[boxMat, 'Estantes – caixas'], [tagMat, 'Estantes – etiquetas RFID'], [fillMat, 'Estantes – conteúdo'], [rackMat, 'Estantes – colunas'], [shelfMat, 'Estantes – prateleiras']]);
+  buckets.forEach((geos, material) => {
+    const merged = THREE.BufferGeometryUtils.mergeBufferGeometries(geos);
+    geos.forEach(g => g.dispose());
+    const m = new THREE.Mesh(merged, material);
+    m.name = names.get(material) || 'Estantes – placas';
+    m.castShadow = material === rackMat || material === boxMat;
+    m.receiveShadow = true;
+    m.matrixAutoUpdate = false;
+    scene.add(m);
+  });
+})();
 
 // ---------------------------------------------------------------------------
 // Estação de pesagem: bancada, balança, leitor RFID, tela
@@ -493,6 +519,7 @@ function snapItems() { items.forEach(it => it.mesh.position.copy(itemTarget(it))
 
 const clock = new THREE.Clock();
 let screenTimer = 0, lastScreenKey = '';
+const perf = { frames:0, time:0 };
 function tick() {
   const dt = Math.min(clock.getDelta(), 0.05);
   const spd = +document.getElementById('speed').value;
@@ -530,7 +557,7 @@ function tick() {
   // telas (redesenha só quando muda)
   screenTimer += dt;
   const key = state.screen + state.step + Math.round(state.reading) + state.stable;
-  if (key !== lastScreenKey || screenTimer > 5) { drawScreen(); drawIndicator(state.reading); lastScreenKey = key; screenTimer = 0; }
+  if ((key !== lastScreenKey && screenTimer > 0.12) || screenTimer > 5) { drawScreen(); drawIndicator(state.reading); lastScreenKey = key; screenTimer = 0; }
   // câmera
   if (camAnim) {
     camAnim.t = Math.min(1, camAnim.t + dt * 1.4);
@@ -538,6 +565,19 @@ function tick() {
     camera.position.lerpVectors(camAnim.from.pos, camAnim.to.pos, e);
     controls.target.lerpVectors(camAnim.from.target, camAnim.to.target, e);
     if (camAnim.t >= 1) camAnim = null;
+  }
+  // modo leve automático: se o computador não sustentar ~30 fps, desliga sombras e reduz a resolução
+  if (!SHOT && perf.frames >= 0) {
+    perf.frames++; perf.time += dt;
+    if (perf.time >= 2) {
+      if (perf.frames / perf.time < 30) {
+        renderer.shadowMap.enabled = false;
+        scene.traverse(o => { if (o.material) o.material.needsUpdate = true; });
+        renderer.setPixelRatio(1); renderer.setSize(innerWidth, innerHeight);
+        log('Modo leve ativado (sombras desligadas) para melhorar o desempenho');
+      }
+      perf.frames = -1;
+    }
   }
   controls.update();
   renderer.render(scene, camera);
